@@ -3,9 +3,13 @@ require_once('db_config.php');
 
 $errors = [];
 $success = false;
-
-// Whitelist of allowed colleges -- used both for validation and to populate the dropdown
 $collegeOptions = ['Panimalar', 'SRM', 'REC'];
+
+$id = (int) ($_GET['id'] ?? $_POST['id'] ?? 0);
+
+if ($id <= 0) {
+    die('Invalid user id.');
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
@@ -35,10 +39,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = 'Please select a valid college.';
     }
 
-    // --- Check for duplicate email / mobile separately so the message is specific ---
+    // --- Check duplicates, excluding this user's own record ---
     if (empty($errors)) {
-        $dupStmt = mysqli_prepare($conn, "SELECT email, mobile FROM users WHERE email = ? OR mobile = ?");
-        mysqli_stmt_bind_param($dupStmt, "ss", $email, $mobile);
+        $dupStmt = mysqli_prepare($conn, "SELECT email, mobile FROM users WHERE (email = ? OR mobile = ?) AND id != ?");
+        mysqli_stmt_bind_param($dupStmt, "ssi", $email, $mobile, $id);
         mysqli_stmt_execute($dupStmt);
         $dupResult = mysqli_stmt_get_result($dupStmt);
 
@@ -53,17 +57,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         mysqli_stmt_close($dupStmt);
     }
 
-    // --- Insert into DB if valid ---
+    // --- Update DB if valid ---
     if (empty($errors)) {
-        $stmt = mysqli_prepare($conn, "INSERT INTO users (name, mobile, email, college) VALUES (?, ?, ?, ?)");
-        mysqli_stmt_bind_param($stmt, "ssss", $name, $mobile, $email, $college);
+        $stmt = mysqli_prepare($conn, "UPDATE users SET name = ?, mobile = ?, email = ?, college = ? WHERE id = ?");
+        mysqli_stmt_bind_param($stmt, "ssssi", $name, $mobile, $email, $college, $id);
 
         if (mysqli_stmt_execute($stmt)) {
             $success = true;
-            // Clear the submitted values so the form resets after a successful registration
-            $name = $mobile = $email = $college = '';
         } else {
-            // Fallback in case a duplicate slips through a race condition (UNIQUE constraint)
             if (mysqli_errno($conn) == 1062) {
                 $errors[] = 'This mail id or mobile number is already registered.';
             } else {
@@ -72,22 +73,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         mysqli_stmt_close($stmt);
     }
-}
+} else {
+    // --- Fresh page load: fetch existing record to pre-fill the form ---
+    $stmt = mysqli_prepare($conn, "SELECT name, mobile, email, college FROM users WHERE id = ?");
+    mysqli_stmt_bind_param($stmt, "i", $id);
+    mysqli_stmt_execute($stmt);
+    $res = mysqli_stmt_get_result($stmt);
+    $user = mysqli_fetch_assoc($res);
+    mysqli_stmt_close($stmt);
 
-// Helper to decide what value should be shown in each field:
-// - On a fresh page load: empty
-// - On a successful submit: empty (cleared)
-// - On a failed submit: whatever the user typed, so they don't have to retype everything
-function fieldValue($key, $success) {
-    if ($success) return '';
-    return htmlspecialchars($_POST[$key] ?? '');
+    if (!$user) {
+        die('User not found.');
+    }
+
+    $name = $user['name'];
+    $mobile = $user['mobile'];
+    $email = $user['email'];
+    $college = $user['college'];
 }
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Registration</title>
+<title>Edit User</title>
 <style>
     body {
         font-family: Arial, sans-serif;
@@ -141,12 +150,12 @@ function fieldValue($key, $success) {
     button:hover {
         background: #1a63d6;
     }
-    .view-grid-btn {
-        background: #28a745;
+    .back-btn {
+        background: #6c757d;
         margin-top: 10px;
     }
-    .view-grid-btn:hover {
-        background: #1e7e34;
+    .back-btn:hover {
+        background: #565e64;
     }
     .msg {
         padding: 10px;
@@ -171,7 +180,7 @@ function fieldValue($key, $success) {
 <body>
 
 <div class="card">
-    <h2>Student Register</h2>
+    <h2>Edit User</h2>
 
     <?php if (!empty($errors)): ?>
         <div class="msg error">
@@ -179,44 +188,46 @@ function fieldValue($key, $success) {
         </div>
     <?php endif; ?>
 
-    <form method="POST" action="">
+    <form method="POST" action="edit_user.php?id=<?php echo $id; ?>">
+        <input type="hidden" name="id" value="<?php echo $id; ?>">
+
         <label for="name">Name</label>
-        <input type="text" id="name" name="name" value="<?php echo fieldValue('name', $success); ?>" required>
+        <input type="text" id="name" name="name" value="<?php echo htmlspecialchars($name); ?>" required>
 
         <label for="mobile">Mobile Number</label>
-        <input type="tel" id="mobile" name="mobile" value="<?php echo fieldValue('mobile', $success); ?>" maxlength="10" required>
+        <input type="tel" id="mobile" name="mobile" value="<?php echo htmlspecialchars($mobile); ?>" maxlength="10" required>
 
         <label for="email">Email ID</label>
-        <input type="email" id="email" name="email" value="<?php echo fieldValue('email', $success); ?>" required>
+        <input type="email" id="email" name="email" value="<?php echo htmlspecialchars($email); ?>" required>
 
         <label for="college">College</label>
         <select id="college" name="college" required>
             <option value="">-- Select College --</option>
             <?php foreach ($collegeOptions as $option): ?>
                 <option value="<?php echo htmlspecialchars($option); ?>"
-                    <?php echo (!$success && ($_POST['college'] ?? '') === $option) ? 'selected' : ''; ?>>
+                    <?php echo ($college === $option) ? 'selected' : ''; ?>>
                     <?php echo htmlspecialchars($option); ?>
                 </option>
             <?php endforeach; ?>
         </select>
 
-        <button type="submit">Register</button>
+        <button type="submit">Update</button>
     </form>
 
     <?php if ($success): ?>
-        <div class="msg success" id="successMsg">Registration successful!</div>
+        <div class="msg success" id="successMsg">Record updated successfully!</div>
         <script>
             setTimeout(function () {
                 var msg = document.getElementById('successMsg');
                 if (msg) {
                     msg.style.display = 'none';
                 }
-            }, 3000);
+            }, 5000);
         </script>
-    <?php endif; ?>
+    <?php endif; ?>                                                                                                                                                       
 
     <form method="GET" action="view_users.php">
-        <button type="submit" class="view-grid-btn">View Grid</button>
+        <button type="submit" class="back-btn">&larr; Back to Grid</button>
     </form>
 </div>
 
